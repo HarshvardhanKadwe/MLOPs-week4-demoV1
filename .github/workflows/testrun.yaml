@@ -1,30 +1,115 @@
-name: Sanity test
+name: CI/CD Pipeline
+
 on:
+  push:
+    branches: ["main"]
   workflow_dispatch:
+
 permissions:
   contents: write
   pull-requests: write
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GAR_LOCATION: us-central1
+  REPOSITORY: my-first-repo
+  IMAGE: iris_fast_api
+  CLUSTER_NAME: demo-gke-iris-cluster
+  GKE_ZONE: us-central1
+
 jobs:
-  test_model:
+
+  ###############################################
+  # ✅ JOB 1: SANITY TEST + CML REPORT
+  ###############################################
+  sanity_test:
+    name: Sanity Test
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
           python-version: "3.9"
-      - uses: iterative/setup-cml@v2
-      - name: run unit tests
+
+      - name: Install CML
+        uses: iterative/setup-cml@v2
+
+      - name: Run Unit Tests
         run: |
           pip install -r requirements.txt
           python -m test 2>&1 > test_output.txt
-      - name: Create CML report
+
+      - name: Create CML Report
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "test output" > report.md
-          echo "\\`\\`\\`" >> report.md
+          echo "## ✅ Sanity Test Output" > report.md
+          echo "\`\`\`" >> report.md
           cat test_output.txt >> report.md
-          echo "\\`\\`\\`" >> report.md
-          echo "metrics from training" >> report.md
+          echo "\`\`\`" >> report.md
+
+          echo "## ✅ Metrics" >> report.md
+          echo "\`\`\`" >> report.md
           cat metrics.csv >> report.md
+          echo "\`\`\`" >> report.md
+
           cml comment create --publish report.md
+
+  ###############################################
+  # ✅ JOB 2: BUILD + PUSH TO GAR + DEPLOY TO GKE
+  ###############################################
+  build_and_deploy:
+    name: Build & Deploy to GKE
+    runs-on: ubuntu-latest
+    needs: sanity_test      # ✅ deploy only if tests pass
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      # Authenticate to GCP
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          export_default_credentials: true
+
+      # Configure Docker to authenticate to Artifact Registry
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker $GAR_LOCATION-docker.pkg.dev
+
+      # Build Docker Image
+      - name: Build Docker Image
+        run: |
+          docker build -t \
+          $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:${{ github.sha }} .
+
+      # Push Docker Image
+      - name: Push Docker Image
+        run: |
+          docker push \
+          $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:${{ github.sha }}
+
+      # Configure kubectl for GKE
+      - name: Get GKE Credentials
+        run: |
+          gcloud container clusters get-credentials $CLUSTER_NAME \
+          --zone $GKE_ZONE --project $PROJECT_ID
+
+      # Deploy to Kubernetes
+      - name: Deploy to GKE
+        run: |
+          kubectl set image deployment/iris-fastapi-deployment \
+          iris-fastapi-container=$GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:${{ github.sha }}
+
+          kubectl rollout status deployment/iris-fastapi-deployment
