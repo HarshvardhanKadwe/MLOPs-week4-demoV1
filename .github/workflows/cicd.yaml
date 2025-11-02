@@ -1,28 +1,34 @@
-name: Build and Deploy to GKE
+name: Build and Deploy
 
+# This workflow runs on pushes to the master branch
 on:
   push:
-    branches: ["master"]
+    branches:
+      - master
 
+# Environment variables available to all jobs and steps
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID}}
-  GAR_LOCATION: us-central1          # Change if needed
-  REPOSITORY: my-first-repo      # Your Artifact Registry repo name
-  IMAGE: iris_fast_api               # Image name
-  CLUSTER_NAME: demo-gke-iris-cluster     # Your GKE cluster name
-  GKE_ZONE: us-central1            # Change to your zone
+  GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GKE_CLUSTER_NAME: ${{ secrets.GKE_CLUSTER_NAME }}
+  GKE_ZONE: ${{ secrets.GKE_ZONE }}
+  ARTIFACT_REGISTRY_URL: "us-central1-docker.pkg.dev"
+  IMAGE_NAME: "iris_fast_api"
+  DEPLOYMENT_NAME: "demo-iris-workload" # As defined in your deployment.yaml
 
 jobs:
   build-and-deploy:
     name: Build and Deploy
     runs-on: ubuntu-latest
 
+    # Add permissions for GitHub's OIDC token
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
     steps:
-    # Checkout the code
-    - name: Checkout Repo
+    - name: Checkout Repository
       uses: actions/checkout@v4
 
-    # Setup gcloud CLI using service account
     - name: Google Cloud Auth
       uses: google-github-actions/auth@v2
       with:
@@ -33,42 +39,37 @@ jobs:
       with:
         project_id: ${{ secrets.GCP_PROJECT_ID }}
         service_account_key: ${{ secrets.GCP_SA_KEY }}
-        export_default_credentials: true
+        export_default_credentials: true    
 
-    # Configure Docker to use Google Artifact Registry
-    - name: Configure Docker for Artifact Registry
-      run: |
-        gcloud auth configure-docker $GAR_LOCATION-docker.pkg.dev
+    - name: Configure Docker
+      run: gcloud auth configure-docker ${{ env.ARTIFACT_REGISTRY_URL }}
 
-    # Build Docker Image
     - name: Build Docker Image
       run: |
-        docker build -t $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:${{ github.sha }} .
-    
-    - name: Install GKE Auth Plugin & Get Credentials
+        docker build \
+          --tag "${{ env.ARTIFACT_REGISTRY_URL }}/${{ env.GCP_PROJECT_ID }}/my-first-repo/${{ env.IMAGE_NAME }}:${{ github.sha }}" \
+          --tag "${{ env.ARTIFACT_REGISTRY_URL }}/${{ env.GCP_PROJECT_ID }}/my-first-repo/${{ env.IMAGE_NAME }}:latest" \
+          .
+
+    - name: Push Docker Image to Artifact Registry
       run: |
-        sudo apt-get update
-        sudo apt-get install -y google-cloud-cli-gke-gcloud-auth-plugin
+        docker push "${{ env.ARTIFACT_REGISTRY_URL }}/${{ env.GCP_PROJECT_ID }}/my-first-repo/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+        docker push "${{ env.ARTIFACT_REGISTRY_URL }}/${{ env.GCP_PROJECT_ID }}/my-first-repo/${{ env.IMAGE_NAME }}:latest"
 
-        export USE_GKE_GCLOUD_AUTH_PLUGIN=True
-        echo "USE_GKE_GCLOUD_AUTH_PLUGIN=True" >> $GITHUB_ENV
-
-        gcloud container clusters get-credentials $CLUSTER_NAME \
-          --zone $GKE_ZONE \
-          --project $PROJECT_ID
-
-    # Push image to Artifact Registry
-    - name: Push Docker Image
-      run: |
-        docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:${{ github.sha }}
-
-    # Get GKE credentials
     - name: Get GKE Credentials
-      run: |
-        gcloud container clusters get-credentials $CLUSTER_NAME --zone $GKE_ZONE --project $PROJECT_ID
+      uses: 'google-github-actions/get-gke-credentials@v2'
+      with:
+        cluster_name: ${{ env.GKE_CLUSTER_NAME }}
+        location: ${{ env.GKE_ZONE }}
 
-    # Deploy to Kubernetes
     - name: Deploy to GKE
       run: |
-        kubectl set image deployment/iris-fastapi-deployment iris-fastapi-container=$GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:${{ github.sha }}
-        kubectl rollout status deployment/iris-fastapi-deployment
+        echo "Updating deployment with new image..."
+        kubectl set image deployment/${{ env.DEPLOYMENT_NAME }} \
+          pre-oppe=${{ env.ARTIFACT_REGISTRY_URL }}/${{ env.GCP_PROJECT_ID }}/my-first-repo/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+    - name: Verify Deployment
+      run: |
+        echo "Waiting for rollout to complete..."
+        kubectl rollout status deployment/${{ env.DEPLOYMENT_NAME }}
+
