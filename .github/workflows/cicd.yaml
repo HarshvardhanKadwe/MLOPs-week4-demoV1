@@ -5,12 +5,8 @@ on:
     branches: ["main"]
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-<<<<<<< HEAD
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID}}
   GAR_LOCATION: us-central1          # Change if needed
-=======
-  GAR_LOCATION: us-central1         # Change if needed
->>>>>>> 414cd3a4f9dbad9443a41c581009a5eb0c59102a
   REPOSITORY: my-first-repo      # Your Artifact Registry repo name
   IMAGE: iris_fast_api               # Image name
   CLUSTER_NAME: demo-gke-iris-cluster     # Your GKE cluster name
